@@ -143,7 +143,7 @@ def SGRFME_model(
                 Y = mlp(Z_tensor) # initial guess for Y
 
                 ZS_tensor = torch.tensor(Z @ Wtilde, dtype=torch.float32).unsqueeze(0) # unsqueeze because conv in torch needs batch channel
-                A = gcn.train_iteration(1, Y, B_tensor, L_tensor, U_tensor, ZS_tensor)
+                A = gcn.train_iteration(1, Y, B_tensor, L_tensor, U_tensor, Z_tensor, ZS_tensor)
                 Y = mlp.train_iteration(1, A, B_tensor, L_tensor, U_tensor, Z_tensor)
 
         except Exception as e:
