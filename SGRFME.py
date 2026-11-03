@@ -132,15 +132,13 @@ def SGRFME_model(
         # avoid zero degree
         degree[degree==0] = np.finfo(float).eps
 
-        Dtildemhalf = np.diag(1.0 / np.sqrt(degree))
-
         try:
             for epoch in range(epochs):
                 # convert numpy to pytorch before passing
                 Z_tensor = torch.tensor(Z, dtype=torch.float32)
                 B_tensor = torch.tensor(B, dtype=torch.float32)
                 L_tensor = torch.tensor(L, dtype=torch.float32)
-                U_tensor = torch.tensor(U, dtype=torch.float32)
+                U_tensor = torch.tensor(U.toarray(), dtype=torch.float32)
 
                 Y = mlp(Z_tensor) # initial guess for Y
 
@@ -148,8 +146,8 @@ def SGRFME_model(
                 A = gcn.train_iteration(1, Y, B_tensor, L_tensor, U_tensor, ZS_tensor)
                 Y = mlp.train_iteration(1, A, B_tensor, L_tensor, U_tensor, Z_tensor)
 
-        except:
-            print("Error calculating A or Y")
+        except Exception as e:
+            print("Error calculating A or Y with exception: " + str(e))
             return None, None
 
         M2 = (

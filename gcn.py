@@ -57,10 +57,10 @@ class gcn(nn.Module):
             torch.trace((B @ A - Y).T @ U @ (B @ A - Y)) + torch.sum((A - Y) ** 2)
             )
     
-    def train_iteration(self, alpha, Y, B, L, U, Z, S):
+    def train_iteration(self, alpha, Y, B, L, U, ZS):
         self.optimizer.zero_grad()
 
-        A = self(Z @ S)
+        A = self(ZS)
 
         loss = self.criterion(alpha, A, B, L, U, Y)
 
