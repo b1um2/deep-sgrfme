@@ -4,7 +4,7 @@ import torch.nn.functional as f
 import torch.optim as optim
 
 class gcn(nn.Module):
-    def __init__(self, num_features, num_anchors, num_classes, lr=0.001):
+    def __init__(self, num_features, num_anchors, num_classes, lr=0.001, hidden_size=128):
         super().__init__()
 
         self.num_features = num_features
@@ -21,8 +21,9 @@ class gcn(nn.Module):
 
         nn_in_size = total_input_elements * conv_out_size
         nn_out_size = num_anchors * num_classes
-        #nn_hidden_size = int(nn_in_size*2/3 + nn_out_size)
-        nn_hidden_size = int(nn_in_size / conv_out_size)
+        # Keep the fully-connected layer small. The old hidden size
+        # (nn_in_size / conv_out_size = 50,000) made linear1 enormous.
+        nn_hidden_size = hidden_size
 
         self.conv1 = nn.Conv2d(
             in_channels=1,
@@ -44,17 +45,38 @@ class gcn(nn.Module):
         self.optimizer = optim.Adam(self.parameters(), lr)
 
     def forward(self, nn_input): # nn_input should be Z @ S for GCN message passing
+        # Conv2d needs (batch, channels, height, width). Accept the 2D
+        # (features, anchors) input as well as an already-batched tensor.
+        if nn_input.dim() == 2:
+            nn_input = nn_input.unsqueeze(0).unsqueeze(0)
+        elif nn_input.dim() == 3:
+            nn_input = nn_input.unsqueeze(1)
+
         nn_input = self.conv1(nn_input)
         nn_input = self.conv2(nn_input)
         nn_input = torch.flatten(nn_input, start_dim=1)
         nn_input = self.linear1(nn_input)
         nn_input = self.linear2(nn_input)
 
-        return torch.softmax(nn_input.reshape(self.output_width, self.output_height), dim=0)
+        # Output is (num_anchors, num_classes), not (num_classes, num_anchors).
+        nn_input = nn_input.reshape(-1, self.output_height, self.output_width)
+        return torch.softmax(nn_input, dim=2).squeeze(0)
 
     def criterion(self, alpha, A, B, L, U, Y):
+        # A and Y are both (num_anchors, num_classes). B @ A gives the
+        # (num_samples, num_classes) prediction, so project the difference
+        # through B before applying U.
+        residual = B @ (A - Y)
+
+        # U is diagonal. Accept either the dense (N, N) matrix or just its
+        # diagonal (N,) so the model does not need to allocate N x N memory.
+        if U.dim() == 1:
+            weighted_residual = torch.sum(U[:, None] * residual ** 2)
+        else:
+            weighted_residual = torch.trace(residual.T @ U @ residual)
+
         return torch.trace(A.T @ L @ A) + alpha * (
-            torch.trace((B @ A - Y).T @ U @ (B @ A - Y)) + torch.sum((A - Y) ** 2)
+            weighted_residual + torch.sum((A - Y) ** 2)
             )
     
     def train_iteration(self, alpha, Y, B, L, U, Z, ZS):

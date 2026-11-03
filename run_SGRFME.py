@@ -228,7 +228,7 @@ print(
 )
 
 total_combinations = (
-    len(param_values) ** 4
+    len(param_values) ** 3
 )
 
 print(
@@ -423,7 +423,7 @@ for gamma in param_values:
 
 print("\n")
 print("=" * 60)
-print("BEST RESULT - SPLIT 1")
+print("BEST RESULT - SPLIT", split)
 print("=" * 60)
 
 if best_params is None:
@@ -446,12 +446,12 @@ else:
 
     print(
         "lambda =",
-        best_params[2]
+        best_params[1]
     )
 
     print(
         "rho =",
-        best_params[3]
+        best_params[2]
     )
 
     print(

@@ -1,6 +1,5 @@
 import distance
 import numpy as np
-from scipy.sparse import diags
 from MLAN import MLAN_Solution
 import distance
 import numpy as np
@@ -61,9 +60,6 @@ def SGRFME_model(
      
     Wtilde = B.T @ B
 
-    Wtildes = {}
-    Wtildes[(0,0)] = Wtilde
-
 
     # Ha matrix
     Ha = np.eye(num_anchors) - (1 / num_anchors) * np.ones(
@@ -87,16 +83,13 @@ def SGRFME_model(
 
 
     # ============================
-    # Construct U matrix
+    # Construct U diagonal
     # ============================
 
     u_values = np.zeros(num_samples)
 
     # First num_labeled samples are labeled
     u_values[:num_labeled] = 1e9
-
-
-    U = diags(u_values)
 
     # ============================
     # Compute BtUY
@@ -114,12 +107,11 @@ def SGRFME_model(
     acc_train = np.zeros(10)
     acc_test = np.zeros(10)
 
-    # matrix L
-    degree = np.sum(Wtilde, axis=1)
-
-    D = np.diag(degree)
-
-    L = D - Wtilde
+    # convert constant numpy arrays to pytorch once
+    Z_tensor = torch.tensor(Z, dtype=torch.float32)
+    B_tensor = torch.tensor(B, dtype=torch.float32)
+    # U is diagonal, so pass only its diagonal instead of a dense N x N matrix.
+    U_tensor = torch.tensor(u_values, dtype=torch.float32)
 
     for iter in range(10):
 
@@ -127,28 +119,33 @@ def SGRFME_model(
         # Graph fixed, estimate A, W, b
         # ============================
 
-        degree = np.sum(Wtilde, axis=0)
+        # matrix L (recomputed from the current Wtilde each iteration)
+        degree = np.sum(Wtilde, axis=1)
 
         # avoid zero degree
         degree[degree==0] = np.finfo(float).eps
 
+        D = np.diag(degree)
+
+        L = D - Wtilde
+
+        # these change when Wtilde changes, so build them per iteration
+        L_tensor = torch.tensor(L, dtype=torch.float32)
+        ZS_tensor = torch.tensor(Z @ Wtilde, dtype=torch.float32).unsqueeze(0).unsqueeze(0) # (batch, channel, features, anchors)
+
         try:
             for epoch in range(epochs):
-                # convert numpy to pytorch before passing
-                Z_tensor = torch.tensor(Z, dtype=torch.float32)
-                B_tensor = torch.tensor(B, dtype=torch.float32)
-                L_tensor = torch.tensor(L, dtype=torch.float32)
-                U_tensor = torch.tensor(U.toarray(), dtype=torch.float32)
-
                 Y = mlp(Z_tensor) # initial guess for Y
 
-                ZS_tensor = torch.tensor(Z @ Wtilde, dtype=torch.float32).unsqueeze(0) # unsqueeze because conv in torch needs batch channel
                 A = gcn.train_iteration(1, Y, B_tensor, L_tensor, U_tensor, Z_tensor, ZS_tensor)
                 Y = mlp.train_iteration(1, A, B_tensor, L_tensor, U_tensor, Z_tensor)
 
         except Exception as e:
             print("Error calculating A or Y with exception: " + str(e))
             return None, None
+
+        # gcn returns a torch tensor; the rest of the algorithm uses numpy.
+        A = A.detach().cpu().numpy()
 
         M2 = (
             z @ Ha @ z.T
@@ -244,8 +241,8 @@ def SGRFME_model(
 
         diff = np.sum(np.abs(Wtildes[-2] - Wtildes[-1]))
         norm = np.sum(Wtildes[-2])
-    
-        if diff / norm < 0.01:
+
+        if norm > 0 and diff / norm < 0.01:
             break
 
     final_train_acc = acc_train[iter]
