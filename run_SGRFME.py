@@ -206,34 +206,33 @@ print(
 )
 
 # ============================================================
-# PARAMETER SEARCH
+# RANDOM PARAMETER SEARCH
 # ============================================================
 
-param_values = [
-    10 ** i
-    for i in range(-3, 3, 1)
-]
+num_trials = 100
+
+search_rng = np.random.default_rng(0)
+
+# Sample log-uniformly because these parameters span several orders of
+# magnitude. rho uses the same bounds as gamma and lambda.
+search_range = [-3.0, 3.0]
+
+gamma_samples = 10 ** search_rng.uniform(*search_range, num_trials)
+lambda_samples = 10 ** search_rng.uniform(*search_range, num_trials)
+rho_samples = 10 ** search_rng.uniform(*search_range, num_trials)
+alpha_samples = 10 ** search_rng.uniform(*search_range, num_trials)
+
+total_combinations = num_trials
 
 print("\n")
 print("=" * 60)
-print("PARAMETER SEARCH")
+print("RANDOM PARAMETER SEARCH")
 print("=" * 60)
 
-print(
-    "Parameter values:"
-)
+print("Trials:", num_trials)
 
 print(
-    param_values
-)
-
-total_combinations = (
-    len(param_values) ** 3
-)
-
-print(
-    "Total combinations:",
-    total_combinations
+    "search range: " + search_range[0] + " ... " + search_range[1] + " (log-uniform)"
 )
 
 print("=" * 60)
@@ -249,22 +248,21 @@ best_params = None
 combination = 0
 
 # ============================================================
-# INITIALIZE NEURAL NETWORKS
+# INITIALIZE NEURAL NETWORKS FOR GLOBAL LEARNING (bad turns out it collapses probability to 10%)
 # ============================================================
-A_approx = gcn(num_features, num_anchors, num_classes)
-Y_approx = mlp(num_features, num_anchors, num_classes)
+#A_approx = gcn(num_features, num_anchors, num_classes)
+#Y_approx = mlp(num_features, num_anchors, num_classes)
 
 # ============================================================
 # SCAN PARAMETERS
 # ============================================================
 
-for gamma in param_values:
+for trial in range(num_trials):
 
-    #for miu in param_values:
-
-        for lambdah in param_values:
-
-            for rho in param_values:
+                gamma = gamma_samples[trial]
+                lambdah = lambda_samples[trial]
+                rho = rho_samples[trial]
+                alpha = alpha_samples[trial]
 
                 combination += 1
 
@@ -272,7 +270,7 @@ for gamma in param_values:
                 print("=" * 60)
 
                 print(
-                    f"Combination "
+                    f"Trial "
                     f"{combination}/{total_combinations}"
                 )
 
@@ -298,6 +296,11 @@ for gamma in param_values:
                     rho
                 )
 
+                print(
+                    "alpha  =",
+                    alpha
+                )
+
                 print("=" * 60)
 
                 # ====================================================
@@ -305,6 +308,8 @@ for gamma in param_values:
                 # ====================================================
 
                 try:
+                    A_approx = gcn(num_features, num_anchors, num_classes)
+                    Y_approx = mlp(num_features, num_anchors, num_classes)
 
                     train_acc, test_acc = (
                         SGRFME.SGRFME_model(
@@ -319,6 +324,7 @@ for gamma in param_values:
                             #miu,
                             lambdah,
                             rho,
+                            alpha,
                             A_approx,
                             Y_approx
                         )
@@ -379,7 +385,8 @@ for gamma in param_values:
                         gamma,
                         #miu,
                         lambdah,
-                        rho
+                        rho,
+                        alpha
                     )
 
                     print("\n")
@@ -405,6 +412,11 @@ for gamma in param_values:
                     print(
                         "rho:",
                         rho
+                    )
+
+                    print(
+                        "alpha:",
+                        alpha
                     )
 
                     print(
@@ -452,6 +464,11 @@ else:
     print(
         "rho =",
         best_params[2]
+    )
+
+    print(
+        "alpha =",
+        best_params[3]
     )
 
     print(

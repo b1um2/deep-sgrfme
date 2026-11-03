@@ -16,9 +16,10 @@ def SGRFME_model(
     gamma,
     lambdah,
     rho,
+    alpha,
     gcn,
     mlp,
-    epochs = 40
+    epochs = 60
 ):
 
     z = anchors.T
@@ -59,6 +60,9 @@ def SGRFME_model(
          
      
     Wtilde = B.T @ B
+
+    # Anchor features weighted by the data-to-anchor graph: X B (d x m)
+    weighted_anchor_features = xtrain.T @ B
 
 
     # Ha matrix
@@ -112,6 +116,8 @@ def SGRFME_model(
     B_tensor = torch.tensor(B, dtype=torch.float32)
     # U is diagonal, so pass only its diagonal instead of a dense N x N matrix.
     U_tensor = torch.tensor(u_values, dtype=torch.float32)
+    # y_train is passed as (num_classes, num_samples); Y must be (N, C).
+    Y_labels = torch.tensor(y_train.T, dtype=torch.float32)
 
     for iter in range(10):
 
@@ -119,26 +125,35 @@ def SGRFME_model(
         # Graph fixed, estimate A, W, b
         # ============================
 
-        # matrix L (recomputed from the current Wtilde each iteration)
-        degree = np.sum(Wtilde, axis=1)
+        # Normalized Laplacian L = I - D^(-1/2) S D^(-1/2), recomputed
+        # from the current Wtilde each iteration.
+        degree = np.sum(Wtilde, axis=0)
 
         # avoid zero degree
-        degree[degree==0] = np.finfo(float).eps
+        degree[degree == 0] = np.finfo(float).eps
 
-        D = np.diag(degree)
-
-        L = D - Wtilde
+        inv_sqrt_degree = 1.0 / np.sqrt(degree)
+        normalized_Wtilde = (
+            Wtilde
+            * inv_sqrt_degree[:, np.newaxis]
+            * inv_sqrt_degree[np.newaxis, :]
+        )
+        L = np.eye(Wtilde.shape[0]) - normalized_Wtilde
 
         # these change when Wtilde changes, so build them per iteration
         L_tensor = torch.tensor(L, dtype=torch.float32)
-        ZS_tensor = torch.tensor(Z @ Wtilde, dtype=torch.float32).unsqueeze(0).unsqueeze(0) # (batch, channel, features, anchors)
+        # GCN input: (X B) S -> d x m, shaped (batch=1, channel=1, d, m)
+        ZS_tensor = torch.tensor(
+            weighted_anchor_features @ Wtilde,
+            dtype=torch.float32
+        ).unsqueeze(0).unsqueeze(0)
 
         try:
             for epoch in range(epochs):
                 Y = mlp(Z_tensor) # initial guess for Y
 
-                A = gcn.train_iteration(1, Y, B_tensor, L_tensor, U_tensor, Z_tensor, ZS_tensor)
-                Y = mlp.train_iteration(1, A, B_tensor, L_tensor, U_tensor, Z_tensor)
+                A = gcn.train_iteration(alpha, Y.detach(), B_tensor, L_tensor, U_tensor, ZS_tensor, Y_labels)
+                Y = mlp.train_iteration(alpha, A.detach(), B_tensor, L_tensor, U_tensor, Z_tensor, Y_labels)
 
         except Exception as e:
             print("Error calculating A or Y with exception: " + str(e))

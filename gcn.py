@@ -4,7 +4,7 @@ import torch.nn.functional as f
 import torch.optim as optim
 
 class gcn(nn.Module):
-    def __init__(self, num_features, num_anchors, num_classes, lr=0.001, hidden_size=128):
+    def __init__(self, num_features, num_anchors, num_classes, lr=0.001, hidden_size=256, conv_channels=32):
         super().__init__()
 
         self.num_features = num_features
@@ -15,36 +15,28 @@ class gcn(nn.Module):
         self.output_height = num_anchors
         self.output_width = num_classes
 
-        total_input_elements = self.input_height * self.input_width
-        conv_hidden_size = 2
-        conv_out_size = 4
-
-        nn_in_size = total_input_elements * conv_out_size
-        nn_out_size = num_anchors * num_classes
-        # Keep the fully-connected layer small. The old hidden size
-        # (nn_in_size / conv_out_size = 50,000) made linear1 enormous.
-        nn_hidden_size = hidden_size
-
         self.conv1 = nn.Conv2d(
             in_channels=1,
-            out_channels=conv_hidden_size,
+            out_channels=conv_channels,
             kernel_size=3,
             padding=1  # keep dimensions (height, width) the same
         )
 
         self.conv2 = nn.Conv2d(
-            in_channels=conv_hidden_size,
-            out_channels=conv_out_size,
+            in_channels=conv_channels,
+            out_channels=conv_channels,
             kernel_size=3,
             padding=1  # keep dimensions (height, width) the same
         )
-        
-        self.linear1 = nn.Linear(nn_in_size, nn_hidden_size)
-        self.linear2 = nn.Linear(nn_hidden_size, nn_out_size)
+
+        # Each anchor is predicted independently from its
+        # (conv_channels x num_features) local representation.
+        self.linear1 = nn.Linear(conv_channels * num_features, hidden_size)
+        self.linear2 = nn.Linear(hidden_size, num_classes)
 
         self.optimizer = optim.Adam(self.parameters(), lr)
 
-    def forward(self, nn_input): # nn_input should be Z @ S for GCN message passing
+    def forward(self, nn_input): # nn_input should be (X @ B) @ S for GCN message passing
         # Conv2d needs (batch, channels, height, width). Accept the 2D
         # (features, anchors) input as well as an already-batched tensor.
         if nn_input.dim() == 2:
@@ -52,21 +44,21 @@ class gcn(nn.Module):
         elif nn_input.dim() == 3:
             nn_input = nn_input.unsqueeze(1)
 
-        nn_input = self.conv1(nn_input)
-        nn_input = self.conv2(nn_input)
-        nn_input = torch.flatten(nn_input, start_dim=1)
-        nn_input = self.linear1(nn_input)
-        nn_input = self.linear2(nn_input)
+        x = torch.relu(self.conv1(nn_input))
+        x = torch.relu(self.conv2(x))
 
-        # Output is (num_anchors, num_classes), not (num_classes, num_anchors).
-        nn_input = nn_input.reshape(-1, self.output_height, self.output_width)
-        return torch.softmax(nn_input, dim=2).squeeze(0)
+        x = x.squeeze(0)                         # (conv_channels, features, anchors)
+        x = x.permute(2, 0, 1)                   # (anchors, conv_channels, features)
+        x = x.reshape(x.shape[0], -1)            # (anchors, conv_channels * features)
 
-    def criterion(self, alpha, A, B, L, U, Y):
-        # A and Y are both (num_anchors, num_classes). B @ A gives the
-        # (num_samples, num_classes) prediction, so project the difference
-        # through B before applying U.
-        residual = B @ (A - Y)
+        x = torch.relu(self.linear1(x))
+        x = self.linear2(x)                      # (anchors, classes)
+        return torch.softmax(x, dim=1)
+
+    def criterion(self, alpha, A, B, L, U, Y, Y_anchor):
+        # A is (num_anchors, num_classes), B is (num_samples, num_anchors),
+        # and Y is the (num_samples, num_classes) ground-truth label matrix.
+        residual = B @ A - Y
 
         # U is diagonal. Accept either the dense (N, N) matrix or just its
         # diagonal (N,) so the model does not need to allocate N x N memory.
@@ -75,18 +67,19 @@ class gcn(nn.Module):
         else:
             weighted_residual = torch.trace(residual.T @ U @ residual)
 
+        # Y_anchor is the other network's (num_anchors, num_classes) output.
         return torch.trace(A.T @ L @ A) + alpha * (
-            weighted_residual + torch.sum((A - Y) ** 2)
+            weighted_residual + torch.sum((A - Y_anchor) ** 2)
             )
     
-    def train_iteration(self, alpha, Y, B, L, U, Z, ZS):
+    def train_iteration(self, alpha, Y_anchor, B, L, U, ZS, Y):
         self.optimizer.zero_grad()
 
         A = self(ZS)
 
-        loss = self.criterion(alpha, A, B, L, U, Y)
+        loss = self.criterion(alpha, A, B, L, U, Y, Y_anchor)
 
         loss.backward()
         self.optimizer.step()
 
-        return self(Z)
+        return self(ZS)

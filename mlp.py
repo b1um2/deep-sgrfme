@@ -5,7 +5,7 @@ import torch.optim as optim
 import numpy.linalg as la
 
 class mlp(nn.Module):
-    def __init__(self, num_features, num_anchors, num_classes, lr = 0.001, hidden_size = 128):
+    def __init__(self, num_features, num_anchors, num_classes, lr = 0.001, hidden_size = 256):
         super().__init__()
 
         self.num_features = num_features
@@ -16,29 +16,28 @@ class mlp(nn.Module):
         self.output_height = num_anchors
         self.output_width = num_classes
 
-        nn_in_size = self.input_height * self.input_width
-        nn_out_size = num_anchors * num_classes
-        # Keep the fully-connected layer small. The original formula
-        # was ~43k wide, and int(nn_in_size) was still 50k wide.
-        nn_hidden_size = hidden_size
-        
-        self.linear1 = nn.Linear(nn_in_size, nn_hidden_size)
-        self.linear2 = nn.Linear(nn_hidden_size, nn_out_size)
+        # Each anchor is mapped independently from its features to its classes.
+        self.linear1 = nn.Linear(num_features, hidden_size)
+        self.linear2 = nn.Linear(hidden_size, num_classes)
 
         self.optimizer = optim.Adam(self.parameters(), lr)
 
     def forward(self, nn_input): # nn_input should be of dimensions batch * num_features * num_anchors
-        nn_input = torch.flatten(nn_input)
-        nn_input = self.linear1(nn_input)
-        nn_input = self.linear2(nn_input)
+        if nn_input.dim() == 3:
+            x = nn_input.squeeze(0).T            # (anchors, features)
+        elif nn_input.dim() == 2:
+            x = nn_input.T                       # (anchors, features)
+        else:
+            x = nn_input
 
-        # Output is (num_anchors, num_classes), not (num_classes, num_anchors).
-        nn_input = nn_input.reshape(self.output_height, self.output_width)
-        return torch.softmax(nn_input, dim=1)
+        x = torch.relu(self.linear1(x))
+        x = self.linear2(x)                      # (anchors, classes)
+        return torch.softmax(x, dim=1)
 
-    def criterion(self, alpha, A, B, L, U, Y):
-        # residual is (N, C); A and Y are (M, C).
-        residual = B @ (A - Y)
+    def criterion(self, alpha, A, B, L, U, Y, Y_anchor):
+        # A is (num_anchors, num_classes), B is (num_samples, num_anchors),
+        # and Y is the (num_samples, num_classes) ground-truth label matrix.
+        residual = B @ A - Y
 
         # U is diagonal. Accept either the dense (N, N) matrix or just its
         # diagonal (N,) so the model does not need to allocate N x N memory.
@@ -47,16 +46,19 @@ class mlp(nn.Module):
         else:
             weighted_residual = torch.trace(residual.T @ U @ residual)
 
+        # Y_anchor is the other network's (num_anchors, num_classes) output.
         return torch.trace(A.T @ L @ A) + alpha * (
-            weighted_residual + torch.sum((A - Y) ** 2)
+            weighted_residual + torch.sum((A - Y_anchor) ** 2)
             )
 
-    def train_iteration(self, alpha, A, B, L, U, Z):
+    def train_iteration(self, alpha, A_other, B, L, U, Z, Y):
         self.optimizer.zero_grad()
 
-        Y = self(Z)
+        Y_anchor = self(Z)
 
-        loss = self.criterion(alpha, A, B, L, U, Y)
+        # Match the original SGRFME: the labeled fit and graph term use A
+        # (the GCN output); the MLP output only enters the consistency term.
+        loss = self.criterion(alpha, A_other, B, L, U, Y, Y_anchor)
 
         loss.backward()
         self.optimizer.step()
